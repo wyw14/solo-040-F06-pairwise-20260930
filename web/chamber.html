@@ -1,9 +1,100 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Chamber</title><link rel="stylesheet" href="/assets/styles.css"></head>
 <body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a aria-current="page" href="/chamber">Chamber</a><a href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a></nav></header>
-<main><div class="page-title"><div><h1>Chamber situation</h1><div class="muted">Gate, cycle, queue and signal state</div></div><button id="refresh">Refresh</button></div><div class="grid" id="chambers"></div><div class="message" id="message"></div></main>
+<main><div class="page-title"><div><h1>Chamber situation</h1><div class="muted">Gate, cycle, queue, signal and valve-ramp state</div></div><button id="refresh">Refresh</button></div><div class="grid" id="chambers"></div><div class="message" id="message"></div></main>
 <script src="/assets/app.js"></script><script>
-const {api,shortID,setMessage}=window.LockFlow; const host=document.querySelector('#chambers'); const message=document.querySelector('#message');
-async function load(){const items=await api('/api/chambers'); host.innerHTML=items.map((item)=>`<section class="panel"><h2>${item.chamber_id}</h2><div class="metrics"><div class="metric">Stage<strong>${item.cycle?.stage||'idle'}</strong></div><div class="metric">Upstream<strong>${item.gates?.upstream||'-'}</strong></div><div class="metric">Downstream<strong>${item.gates?.downstream||'-'}</strong></div></div><table><tr><th>Cycle</th><td>${shortID(item.cycle?.id)}</td></tr><tr><th>Queue</th><td>${item.queue?.length||0} vessel(s)</td></tr><tr><th>Emergency</th><td>${item.emergency?.status||'idle'}</td></tr></table></section>`).join(''); setMessage(message,'');}
-document.querySelector('#refresh').addEventListener('click',()=>load().catch((e)=>setMessage(message,e.message))); load().catch((e)=>setMessage(message,e.message));
+const {api,shortID,setMessage}=window.LockFlow;
+const host=document.querySelector('#chambers'); const message=document.querySelector('#message');
+
+const esc=(v)=>String(v??'').replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function stepChips(plan){
+  return plan.steps.map((s)=>{
+    const cls=s.state==='issued'?'step-done':(s.state==='cancelled'?'step-cancel':'step-pending');
+    return `<span class="step ${cls}" title="${esc(s.state)} #${s.index}">${s.index+1}: ${s.target}</span>`;
+  }).join('');
+}
+
+function rampBlock(chamber,cycle,plan){
+  if(!plan){
+    return `<div class="muted">No valve ramp for this transit.</div>
+      <form class="ramp-form" data-chamber="${chamber}" data-action="start">
+        <input name="targets" placeholder="Openings, e.g. 10,20,30,40">
+        <button type="submit">Start ramp</button>
+      </form>`;
+  }
+  const done=plan.steps.filter((s)=>s.state==='issued').length;
+  const pending=plan.steps.filter((s)=>s.state==='pending').length;
+  let controls='';
+  if(plan.status==='running'||plan.status==='paused'){
+    controls+=`<button class="danger" data-act="pause" data-chamber="${chamber}" ${plan.status==='paused'?'disabled':''}>Pause</button>`;
+  }
+  if(plan.status==='paused'){
+    controls+=`<form class="ramp-form" data-chamber="${chamber}" data-action="resume">
+      <input name="reviewer" placeholder="Reviewer name" required>
+      <input name="note" placeholder="Safety review note">
+      <label class="check"><input type="checkbox" name="confirmed" required> Safety conditions verified</label>
+      <button type="submit">Resume from step ${plan.next_index+1}</button>
+    </form>`;
+  }
+  const reason=plan.abort_reason?`<div class="muted">Aborted: ${esc(plan.abort_reason)}</div>`:'';
+  const resumeNote=plan.resume_note?`<div class="muted">Resume: ${esc(plan.resume_note)}</div>`:'';
+  return `<div class="metrics">
+      <div class="metric">Ramp<strong>${esc(plan.status)}</strong></div>
+      <div class="metric">Completed<strong>${done}/${plan.steps.length}</strong></div>
+      <div class="metric">Pending<strong>${pending}</strong></div>
+    </div>
+    <table><tr><th>Plan</th><td>${shortID(plan.plan_id)} · gen ${plan.generation}</td></tr>
+    <tr><th>Next step</th><td>${pending?('#'+(plan.next_index+1)):'—'}</td></tr></table>
+    <div class="steps">${stepChips(plan)}</div>
+    ${reason}${resumeNote}
+    <div class="ramp-controls">${controls}</div>
+    ${plan.status==='completed'?`<form class="ramp-form" data-chamber="${chamber}" data-action="start">
+      <input name="targets" placeholder="Openings, e.g. 10,20,30,40">
+      <button type="submit">New ramp</button></form>`:''}`;
+}
+
+async function load(){
+  const items=await api('/api/chambers');
+  const ramps=await Promise.all(items.map((item)=>
+    api(`/api/chambers/${item.chamber_id}/valves/ramp`).then((p)=>({id:item.chamber_id,plan:p})).catch(()=>({id:item.chamber_id,plan:null}))));
+  const rampById=Object.fromEntries(ramps.map((r)=>[r.id,r.plan]));
+  host.innerHTML=items.map((item)=>`<section class="panel wide">
+    <h2>${item.chamber_id} <span class="muted">· stage ${item.cycle?.stage||'idle'} · cycle ${shortID(item.cycle?.id)} · emergency ${item.emergency?.status||'idle'}</span></h2>
+    <div class="metrics"><div class="metric">Upstream<strong>${item.gates?.upstream||'-'}</strong></div>
+    <div class="metric">Downstream<strong>${item.gates?.downstream||'-'}</strong></div>
+    <div class="metric">Queue<strong>${item.queue?.length||0} vessel(s)</strong></div></div>
+    <h3 class="ramp-title">Valve ramp</h3>${rampBlock(item.chamber_id,item.cycle,rampById[item.chamber_id])}
+  </section>`).join('');
+  setMessage(message,'');
+}
+
+async function act(path,body){
+  await api(path,{method:'POST',body:body?JSON.stringify(body):undefined});
+  await load();
+}
+
+host.addEventListener('click',async(e)=>{
+  const btn=e.target.closest('button[data-act]'); if(!btn) return;
+  try{ await act(`/api/chambers/${btn.dataset.chamber}/valves/ramp/pause`,{note:'operator pause'}); }
+  catch(err){ setMessage(message,err.message); }
+});
+
+host.addEventListener('submit',async(e)=>{
+  const form=e.target.closest('form.ramp-form'); if(!form) return;
+  e.preventDefault(); const chamber=form.dataset.chamber;
+  try{
+    if(form.dataset.action==='start'){
+      const targets=form.targets.value.split(',').map((v)=>Number(v.trim())).filter((v)=>Number.isFinite(v));
+      await act(`/api/chambers/${chamber}/valves/ramp`,{targets});
+    }else if(form.dataset.action==='resume'){
+      await act(`/api/chambers/${chamber}/valves/ramp/resume`,{
+        reviewer:form.reviewer.value,note:form.note.value,confirmed:form.confirmed.checked});
+    }
+  }catch(err){ setMessage(message,err.message); }
+});
+
+document.querySelector('#refresh').addEventListener('click',()=>load().catch((e)=>setMessage(message,e.message)));
+load().catch((e)=>setMessage(message,e.message));
+setInterval(()=>load().catch(()=>{}),3000);
 </script></body></html>

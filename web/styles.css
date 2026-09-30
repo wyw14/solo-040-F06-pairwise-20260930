@@ -53,6 +53,18 @@ th { color: #91a0a8; font-weight: 600; }
 .status.warning::before { background: #f2c14e; }
 .status.critical::before { background: #ef6f6c; }
 .message { min-height: 22px; color: #f2c14e; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
+.ramp-title { font-size: 14px; margin: 16px 0 8px; color: #b9c4ca; }
+.steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.step { display: inline-flex; padding: 4px 9px; border-radius: 4px; font-size: 12px; border: 1px solid #465761; background: #1d262d; color: #b9c4ca; }
+.step-done { border-color: #5bc0be; background: #1d6f72; color: #fff; }
+.step-pending { border-style: dashed; }
+.step-cancel { opacity: .5; text-decoration: line-through; }
+.ramp-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.ramp-form input { width: auto; flex: 1 1 200px; }
+.ramp-form .check { display: inline-flex; align-items: center; gap: 6px; margin: 0; white-space: nowrap; }
+.ramp-form .check input { width: auto; flex: none; min-height: 0; }
+.ramp-controls { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.ramp-controls .ramp-form { margin-top: 0; flex: 1 1 320px; }
 @media (max-width: 780px) {
   header { height: auto; padding: 14px 18px; align-items: flex-start; flex-direction: column; gap: 10px; }
   main { padding: 20px 16px 40px; }

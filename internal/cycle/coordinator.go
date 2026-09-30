@@ -52,6 +52,8 @@ func (c *Coordinator) Start(ctx context.Context, plan model.ConvoyPlan) (model.T
 	if _, err := c.recorder.Record(ctx, plan.ChamberID, model.EventCycleCreated, cycleValue.ID, cycleValue.Generation, cycleValue); err != nil {
 		return model.TransitCycle{}, err
 	}
+	// A fresh generation supersedes any ramp left behind by the previous one.
+	c.hydraulics.AbortRamp(ctx, plan.ChamberID, "new transit generation started")
 	return cycleValue, nil
 }
 
@@ -75,8 +77,13 @@ func (c *Coordinator) Cancel(ctx context.Context, chamberID, reason string) (mod
 	}
 	c.current[chamberID] = cycleValue
 	c.mu.Unlock()
-	_, err := c.recorder.Record(ctx, chamberID, model.EventCycleAdvanced, cycleValue.ID, cycleValue.Generation, cycleValue)
-	return cycleValue, err
+	if _, err := c.recorder.Record(ctx, chamberID, model.EventCycleAdvanced, cycleValue.ID, cycleValue.Generation, cycleValue); err != nil {
+		return cycleValue, err
+	}
+	// A cancelled or emergency transit must never be resumed: invalidate any
+	// in-flight ramp bound to this exact generation.
+	c.hydraulics.AbortRampForCycle(ctx, chamberID, cycleValue.ID, cycleValue.Generation, "transit "+string(cycleValue.Stage))
+	return cycleValue, nil
 }
 
 func (c *Coordinator) ApplyGateAck(ctx context.Context, ack model.DeviceAck) error {

@@ -69,8 +69,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	leaseSweeper := lease.NewSweeper(leaseRegistry, now)
 	planner := schedule.NewPlanner(admissionService, recorder, now)
 	scheduleService := schedule.NewService(planner, signalPublisher)
-	ramp := hydraulics.NewRamp(25*time.Millisecond, now)
-	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
+	hydraulicsController := hydraulics.NewController(gateCommands, recorder, 25*time.Millisecond, now)
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator
 	levelByChamber := func(chamberID string) float64 {
@@ -91,9 +90,12 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	cycleService := cycle.NewService(cycleCoordinator, admissionService)
 	safetyCoordinator = safety.NewCoordinator(gateCommands, barrier, recorder, now)
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)
+	// Ramp resume is only permitted while the same cycle generation is live
+	// and no emergency shutdown is draining actuators.
+	hydraulicsController.Supervisor().BindGuards(cycleCoordinator.Current, safetyCoordinator.Active)
 	signalService.BindTransitLookup(cycleCoordinator)
 	replayer := journal.NewReplayer(store)
-	recovery := cycle.NewRecovery(replayer, cycleCoordinator)
+	recovery := cycle.NewRecovery(replayer, cycleCoordinator, hydraulicsController)
 	if _, err := recovery.RestoreAll(ctx); err != nil {
 		return nil, err
 	}

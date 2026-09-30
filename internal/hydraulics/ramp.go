@@ -1,79 +1,91 @@
 package hydraulics
 
-import (
-	"context"
-	"errors"
-	"sync"
-	"time"
+import "time"
 
-	"github.com/wyw14/cry-96/internal/model"
+// RampStepState is the lifecycle state of a single valve opening step.
+type RampStepState string
+
+const (
+	StepPending   RampStepState = "pending"
+	StepIssued    RampStepState = "issued"
+	StepCancelled RampStepState = "cancelled"
 )
 
+func (s RampStepState) terminal() bool { return s == StepIssued || s == StepCancelled }
+
+// RampStatus is the operator-visible lifecycle of a transit ramp plan.
+type RampStatus string
+
+const (
+	RampRunning   RampStatus = "running"
+	RampPaused    RampStatus = "paused"
+	RampCompleted RampStatus = "completed"
+	RampAborted   RampStatus = "aborted"
+)
+
+func (s RampStatus) Terminal() bool { return s == RampCompleted || s == RampAborted }
+
+// RampStep describes one opening target and its dispatch state.
 type RampStep struct {
-	Target    float64   `json:"target"`
-	IssuedAt  time.Time `json:"issued_at"`
-	Completed bool      `json:"completed"`
+	Index     int           `json:"index"`
+	Target    float64       `json:"target"`
+	State     RampStepState `json:"state"`
+	IssuedAt  time.Time     `json:"issued_at,omitempty"`
+	CommandID string        `json:"command_id,omitempty"`
 }
 
-type RampResult struct {
-	Steps     []RampStep `json:"steps"`
-	Cancelled bool       `json:"cancelled"`
+// RampPlan is the durable, operator-visible view of one cycle's valve ramp.
+// It is bound to a transit cycle identity (id + generation); resume is only
+// ever accepted for that exact generation, so a newer transit can never reuse
+// a stale plan and re-issue the same opening.
+type RampPlan struct {
+	PlanID      string     `json:"plan_id"`
+	ChamberID   string     `json:"chamber_id"`
+	CycleID     string     `json:"cycle_id"`
+	Generation  uint64     `json:"generation"`
+	Status      RampStatus `json:"status"`
+	Steps       []RampStep `json:"steps"`
+	NextIndex   int        `json:"next_index"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	PausedAt    time.Time  `json:"paused_at,omitempty"`
+	ResumeNote  string     `json:"resume_note,omitempty"`
+	AbortReason string     `json:"abort_reason,omitempty"`
 }
 
-type StepIssuer func(context.Context, model.TransitCycle, float64) error
-
-// Ramp executes each valve target under the caller's lifecycle.
-type Ramp struct {
-	mu       sync.RWMutex
-	interval time.Duration
-	history  []RampStep
-	now      func() time.Time
+// CompletedSteps returns the already dispatched steps in order.
+func (p RampPlan) CompletedSteps() []RampStep {
+	return p.stepsInState(StepIssued)
 }
 
-func NewRamp(interval time.Duration, now func() time.Time) *Ramp {
-	if interval <= 0 {
-		interval = 20 * time.Millisecond
-	}
-	if now == nil {
-		now = time.Now
-	}
-	return &Ramp{interval: interval, now: now}
+// PendingSteps returns the steps still waiting to be dispatched.
+func (p RampPlan) PendingSteps() []RampStep {
+	return p.stepsInState(StepPending)
 }
 
-func (r *Ramp) Run(ctx context.Context, cycle model.TransitCycle, targets []float64, issue StepIssuer) (RampResult, error) {
-	if issue == nil || len(targets) == 0 {
-		return RampResult{}, errors.New("ramp requires targets and an issuer")
-	}
-	result := RampResult{}
-	for _, target := range targets {
-		if err := ctx.Err(); err != nil {
-			result.Cancelled = true
-			return result, err
-		}
-		step := RampStep{Target: target, IssuedAt: r.now().UTC()}
-		if err := issue(ctx, cycle, target); err != nil {
-			return result, err
-		}
-		step.Completed = true
-		result.Steps = append(result.Steps, step)
-		r.mu.Lock()
-		r.history = append(r.history, step)
-		r.mu.Unlock()
-		timer := time.NewTimer(r.interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			result.Cancelled = true
-			return result, ctx.Err()
-		case <-timer.C:
+// MarkAborted invalidates a restored plan that can no longer be resumed.
+func (p *RampPlan) MarkAborted(reason string) {
+	p.Status = RampAborted
+	p.AbortReason = reason
+	for i := range p.Steps {
+		if p.Steps[i].State == StepPending {
+			p.Steps[i].State = StepCancelled
 		}
 	}
-	return result, nil
 }
 
-func (r *Ramp) History() []RampStep {
-	r.mu.RLock()
-	result := append([]RampStep(nil), r.history...)
-	r.mu.RUnlock()
+func (p RampPlan) stepsInState(want RampStepState) []RampStep {
+	result := make([]RampStep, 0, len(p.Steps))
+	for _, step := range p.Steps {
+		if step.State == want {
+			result = append(result, step)
+		}
+	}
 	return result
+}
+
+func (p RampPlan) clone() RampPlan {
+	plan := p
+	plan.Steps = append([]RampStep(nil), p.Steps...)
+	return plan
 }
