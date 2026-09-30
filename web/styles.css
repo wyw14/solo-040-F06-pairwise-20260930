@@ -53,6 +53,24 @@ th { color: #91a0a8; font-weight: 600; }
 .status.warning::before { background: #f2c14e; }
 .status.critical::before { background: #ef6f6c; }
 .message { min-height: 22px; color: #f2c14e; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
+.ramp { margin-top: 16px; border-top: 1px solid #2c3941; padding-top: 14px; }
+.ramp h3 { font-size: 14px; margin: 0 0 10px; color: #b9c4ca; font-weight: 600; }
+.ramp-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; margin-bottom: 8px; }
+.steps { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 4px; }
+.step { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 6px 8px; border: 1px solid #2c3941; border-radius: 4px; background: #0f1418; }
+.step.done { color: #8fb9b7; border-color: #274a49; }
+.step.next { border-color: #f2c14e; background: #2a2616; }
+.step-mark { width: 16px; text-align: center; }
+.step.done .step-mark { color: #5bc0be; }
+.step.next .step-mark { color: #f2c14e; }
+.step-index { color: #91a0a8; min-width: 34px; }
+.step-target { font-weight: 650; min-width: 52px; }
+.step-state { margin-left: auto; color: #91a0a8; }
+.step.done .step-state { color: #6f8f8d; }
+.review { margin-top: 10px; display: grid; gap: 8px; }
+.review .check { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; }
+.review .check input { width: auto; min-height: 0; }
+.blocked { margin-top: 10px; font-size: 13px; color: #ef6f6c; border: 1px solid #6f3a39; background: #2a1716; padding: 8px 10px; border-radius: 4px; }
 @media (max-width: 780px) {
   header { height: auto; padding: 14px 18px; align-items: flex-start; flex-direction: column; gap: 10px; }
   main { padding: 20px 16px 40px; }

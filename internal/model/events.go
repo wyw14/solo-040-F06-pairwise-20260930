@@ -21,6 +21,11 @@ const (
 	EventLeaseChanged     EventType = "lease.changed"
 	EventEmergencyStarted EventType = "emergency.started"
 	EventEmergencySettled EventType = "emergency.settled"
+	EventRampStarted      EventType = "ramp.started"
+	EventRampPaused       EventType = "ramp.paused"
+	EventRampResumed      EventType = "ramp.resumed"
+	EventRampAborted      EventType = "ramp.aborted"
+	EventRampCompleted    EventType = "ramp.completed"
 	EventReplayWarning    EventType = "replay.warning"
 )
 

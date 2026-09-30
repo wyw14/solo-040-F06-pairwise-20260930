@@ -47,6 +47,10 @@ type Runtime struct {
 	Now             func() time.Time
 }
 
+// defaultRampInterval is the dwell between valve ramp steps. It is a package
+// variable so tests in this package can stretch it for deterministic pauses.
+var defaultRampInterval = 25 * time.Millisecond
+
 func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	now := time.Now
 	store, err := journal.NewRuntimeStore(dataDirectory)
@@ -69,7 +73,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	leaseSweeper := lease.NewSweeper(leaseRegistry, now)
 	planner := schedule.NewPlanner(admissionService, recorder, now)
 	scheduleService := schedule.NewService(planner, signalPublisher)
-	ramp := hydraulics.NewRamp(25*time.Millisecond, now)
+	ramp := hydraulics.NewRamp(defaultRampInterval, now)
 	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator

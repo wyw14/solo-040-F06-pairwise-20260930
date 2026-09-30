@@ -41,10 +41,20 @@ func (c *Coordinator) Start(ctx context.Context, plan model.ConvoyPlan) (model.T
 		return model.TransitCycle{}, errors.New("chamber already has an active transit")
 	}
 	c.generations[plan.ChamberID]++
-	cycleValue, err := model.NewTransitCycle(plan.ChamberID, plan.ID, plan.Direction, c.generations[plan.ChamberID], c.now())
-	if err == nil {
-		c.current[plan.ChamberID] = cycleValue
+	generation := c.generations[plan.ChamberID]
+	c.mu.Unlock()
+	// A new generation supersedes any ramp left over from the previous transit:
+	// it must never be resumed against the newer cycle.
+	if _, err := c.hydraulics.AbortRamp(plan.ChamberID, "superseded by new transit generation"); err != nil &&
+		!errors.Is(err, hydraulics.ErrRampNotFound) {
+		return model.TransitCycle{}, err
 	}
+	cycleValue, err := model.NewTransitCycle(plan.ChamberID, plan.ID, plan.Direction, generation, c.now())
+	if err != nil {
+		return model.TransitCycle{}, err
+	}
+	c.mu.Lock()
+	c.current[plan.ChamberID] = cycleValue
 	c.mu.Unlock()
 	if err != nil {
 		return model.TransitCycle{}, err
@@ -75,6 +85,10 @@ func (c *Coordinator) Cancel(ctx context.Context, chamberID, reason string) (mod
 	}
 	c.current[chamberID] = cycleValue
 	c.mu.Unlock()
+	// Terminal transit: forbid any further resume of its ramp and halt a
+	// running one at the next safe point. A ramp already superseded by a newer
+	// generation is left alone.
+	c.hydraulics.AbortRampForCycle(chamberID, cycleValue.ID, cycleValue.Generation, "transit "+string(cycleValue.Stage)+": "+reason)
 	_, err := c.recorder.Record(ctx, chamberID, model.EventCycleAdvanced, cycleValue.ID, cycleValue.Generation, cycleValue)
 	return cycleValue, err
 }

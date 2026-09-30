@@ -1,9 +1,107 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Chamber</title><link rel="stylesheet" href="/assets/styles.css"></head>
 <body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a aria-current="page" href="/chamber">Chamber</a><a href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a></nav></header>
-<main><div class="page-title"><div><h1>Chamber situation</h1><div class="muted">Gate, cycle, queue and signal state</div></div><button id="refresh">Refresh</button></div><div class="grid" id="chambers"></div><div class="message" id="message"></div></main>
+<main><div class="page-title"><div><h1>Chamber situation</h1><div class="muted">Gate, cycle, queue, signal and valve-ramp state</div></div><button id="refresh">Refresh</button></div><div class="grid" id="chambers"></div><div class="message" id="message"></div></main>
 <script src="/assets/app.js"></script><script>
-const {api,shortID,setMessage}=window.LockFlow; const host=document.querySelector('#chambers'); const message=document.querySelector('#message');
-async function load(){const items=await api('/api/chambers'); host.innerHTML=items.map((item)=>`<section class="panel"><h2>${item.chamber_id}</h2><div class="metrics"><div class="metric">Stage<strong>${item.cycle?.stage||'idle'}</strong></div><div class="metric">Upstream<strong>${item.gates?.upstream||'-'}</strong></div><div class="metric">Downstream<strong>${item.gates?.downstream||'-'}</strong></div></div><table><tr><th>Cycle</th><td>${shortID(item.cycle?.id)}</td></tr><tr><th>Queue</th><td>${item.queue?.length||0} vessel(s)</td></tr><tr><th>Emergency</th><td>${item.emergency?.status||'idle'}</td></tr></table></section>`).join(''); setMessage(message,'');}
-document.querySelector('#refresh').addEventListener('click',()=>load().catch((e)=>setMessage(message,e.message))); load().catch((e)=>setMessage(message,e.message));
+const { api, shortID, setMessage } = window.LockFlow;
+const host = document.querySelector('#chambers');
+const message = document.querySelector('#message');
+
+const rampStatusClass = (status) =>
+  status === 'running' ? '' : status === 'paused' ? 'warning' : status === 'aborted' ? 'critical' : '';
+
+function rampCard(chamberID, ramp) {
+  if (!ramp) {
+    return `<div class="ramp"><h3>Valve ramp</h3>
+      <label for="targets-${chamberID}">Target openings (comma-separated, %)</label>
+      <input id="targets-${chamberID}" placeholder="0.1, 0.2, 0.4, 0.7">
+      <button data-action="start" data-chamber="${chamberID}">Start ramp</button></div>`;
+  }
+  const next = ramp.next_index ? ramp.next_index + 1 : null;
+  const steps = ramp.steps.map((step) => {
+    const marker = step.completed ? '&#10003;' : next === step.index ? '&#9654;' : '&middot;';
+    const cls = step.completed ? 'step done' : next === step.index ? 'step next' : 'step';
+    return `<li class="${cls}"><span class="step-mark">${marker}</span>
+      <span class="step-index">#${step.index}</span>
+      <span class="step-target">${step.target}</span>
+      <span class="step-state">${step.completed ? 'issued' + (step.issued_at ? ' ' + new Date(step.issued_at).toLocaleTimeString() : '') : 'pending'}</span></li>`;
+  }).join('');
+  let controls = '';
+  if (ramp.status === 'running') {
+    controls = `<button data-action="pause" data-chamber="${chamberID}">Pause</button>`;
+  } else if (ramp.status === 'paused') {
+    controls = ramp.can_resume ? `
+      <div class="review">
+        <label class="check"><input type="checkbox" data-role="confirmed" data-chamber="${chamberID}"> I have completed the safety review for this transit generation</label>
+        <input data-role="reviewer" data-chamber="${chamberID}" placeholder="Reviewer name">
+        <button data-action="resume" data-chamber="${chamberID}">Resume from step #${next}</button>
+      </div>`
+      : `<div class="blocked">Resume blocked: ${ramp.blocked_reason || 'transit no longer current'}</div>`;
+  } else if (ramp.status === 'aborted') {
+    controls = `<div class="blocked">Aborted: ${ramp.abort_reason || ''}</div>`;
+  }
+  const note = ramp.status === 'paused'
+    ? `<div class="muted">Paused: ${ramp.pause_reason || ''}${ramp.reviewer ? ' &middot; reviewed by ' + ramp.reviewer : ''}</div>` : '';
+  return `<div class="ramp"><h3>Valve ramp</h3>
+    <div class="ramp-head"><span class="status ${rampStatusClass(ramp.status)}">${ramp.status}</span>
+    <span>${ramp.completed}/${ramp.total} steps issued</span>
+    <span class="muted">cycle ${shortID(ramp.cycle_id)} · gen ${ramp.generation}</span></div>
+    ${note}
+    <ol class="steps">${steps}</ol>${controls}</div>`;
+}
+
+function chamberPanel(item, ramp) {
+  return `<section class="panel"><h2>${item.chamber_id}</h2>
+    <div class="metrics"><div class="metric">Stage<strong>${item.cycle?.stage||'idle'}</strong></div>
+    <div class="metric">Upstream<strong>${item.gates?.upstream||'-'}</strong></div>
+    <div class="metric">Downstream<strong>${item.gates?.downstream||'-'}</strong></div></div>
+    <table><tr><th>Cycle</th><td>${shortID(item.cycle?.id)}</td></tr>
+    <tr><th>Queue</th><td>${item.queue?.length||0} vessel(s)</td></tr>
+    <tr><th>Emergency</th><td>${item.emergency?.status||'idle'}</td></tr></table>
+    ${rampCard(item.chamber_id, ramp)}
+    <div class="message" id="ramp-message-${item.chamber_id}"></div></section>`;
+}
+
+async function rampFor(chamberID) {
+  try { return await api(`/api/chambers/${chamberID}/valves/ramp`); }
+  catch { return null; }
+}
+
+async function load() {
+  const items = await api('/api/chambers');
+  const ramps = await Promise.all(items.map((item) => rampFor(item.chamber_id)));
+  host.innerHTML = items.map((item, index) => chamberPanel(item, ramps[index])).join('');
+  setMessage(message, '');
+  // Only keep polling while a ramp is moving; a paused ramp must not refresh
+  // away the reviewer's in-progress safety-review input.
+  if (ramps.some((ramp) => ramp && ramp.status === 'running')) {
+    setTimeout(() => load().catch(() => {}), 2000);
+  }
+}
+
+async function rampAction(action, chamberID) {
+  const localMessage = document.querySelector(`#ramp-message-${chamberID}`);
+  try {
+    if (action === 'start') {
+      const raw = document.querySelector(`#targets-${chamberID}`).value;
+      const targets = raw.split(',').map((value) => Number(value.trim())).filter((value) => !Number.isNaN(value));
+      if (!targets.length) throw new Error('Enter at least one target opening');
+      await api(`/api/chambers/${chamberID}/valves/ramp`, { method: 'POST', body: JSON.stringify({ targets }) });
+    } else if (action === 'pause') {
+      await api(`/api/chambers/${chamberID}/valves/ramp/pause`, { method: 'POST', body: JSON.stringify({ note: 'operator pause' }) });
+    } else if (action === 'resume') {
+      const confirmed = document.querySelector(`[data-role="confirmed"][data-chamber="${chamberID}"]`).checked;
+      const reviewer = document.querySelector(`[data-role="reviewer"][data-chamber="${chamberID}"]`).value.trim();
+      await api(`/api/chambers/${chamberID}/valves/ramp/resume`, { method: 'POST', body: JSON.stringify({ confirmed, reviewer }) });
+    }
+    await load();
+  } catch (error) { setMessage(localMessage, error.message); }
+}
+
+host.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (button) rampAction(button.dataset.action, button.dataset.chamber);
+});
+document.querySelector('#refresh').addEventListener('click', () => load().catch((e) => setMessage(message, e.message)));
+load().catch((e) => setMessage(message, e.message));
 </script></body></html>
